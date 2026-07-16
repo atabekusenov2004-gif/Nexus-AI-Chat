@@ -1,0 +1,6 @@
+{
+  "name": "Nexus AI Chat",
+  "description": "A professional artificial intelligence assistant featuring multi-turn conversations, secure local session history, customizable persona roles, and real-time fact-checking via Google Search grounding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
