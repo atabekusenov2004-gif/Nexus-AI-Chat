@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -125,75 +126,94 @@ fun getFileSize(context: Context, uri: Uri): String {
 
 fun parseMessageText(text: String): List<MessageBlock> {
     val blocks = mutableListOf<MessageBlock>()
-    val parts = text.split("```")
-    for (i in parts.indices) {
-        val part = parts[i]
-        if (i % 2 == 1) {
-            val lines = part.split("\n")
-            val language = lines.firstOrNull()?.trim() ?: ""
-            val code = lines.drop(1).joinToString("\n").trim()
-            blocks.add(MessageBlock.Code(language, code))
-        } else {
-            if (part.isNotEmpty()) {
-                // Parse markdown image tags within the text block
-                // e.g., ![Rasm](https://...)
-                val currentText = part
-                val imageRegex = Regex("!\\[.*?\\]\\((.*?)\\)")
-                var match = imageRegex.find(currentText)
-                
-                if (match == null) {
-                    blocks.add(MessageBlock.Text(currentText))
-                } else {
-                    var lastIndex = 0
-                    while (match != null) {
-                        val start = match.range.first
-                        val end = match.range.last
-                        val beforeText = currentText.substring(lastIndex, start)
-                        if (beforeText.isNotEmpty()) {
-                            blocks.add(MessageBlock.Text(beforeText))
+    try {
+        val parts = text.split("```")
+        for (i in parts.indices) {
+            val part = parts[i]
+            if (i % 2 == 1) {
+                val lines = part.split("\n")
+                val language = lines.firstOrNull()?.trim() ?: ""
+                val code = lines.drop(1).joinToString("\n").trim()
+                blocks.add(MessageBlock.Code(language, code))
+            } else {
+                if (part.isNotEmpty()) {
+                    // Parse markdown image tags within the text block
+                    // e.g., ![Rasm](https://...)
+                    val currentText = part
+                    val imageRegex = Regex("!\\[.*?\\]\\((.*?)\\)")
+                    var match = imageRegex.find(currentText)
+                    
+                    if (match == null) {
+                        blocks.add(MessageBlock.Text(currentText))
+                    } else {
+                        var lastIndex = 0
+                        while (match != null) {
+                            val start = match.range.first
+                            val end = match.range.last
+                            if (lastIndex in 0..start && start <= currentText.length) {
+                                val beforeText = currentText.substring(lastIndex, start)
+                                if (beforeText.isNotEmpty()) {
+                                    blocks.add(MessageBlock.Text(beforeText))
+                                }
+                            }
+                            
+                            val imageUrl = match.groupValues[1]
+                            blocks.add(MessageBlock.Image(imageUrl))
+                            
+                            lastIndex = end + 1
+                            if (lastIndex > currentText.length) {
+                                break
+                            }
+                            match = imageRegex.find(currentText, lastIndex)
                         }
-                        
-                        val imageUrl = match.groupValues[1]
-                        blocks.add(MessageBlock.Image(imageUrl))
-                        
-                        lastIndex = end + 1
-                        match = imageRegex.find(currentText, lastIndex)
-                    }
-                    val remainingText = currentText.substring(lastIndex)
-                    if (remainingText.isNotEmpty()) {
-                        blocks.add(MessageBlock.Text(remainingText))
+                        if (lastIndex in 0..currentText.length) {
+                            val remainingText = currentText.substring(lastIndex)
+                            if (remainingText.isNotEmpty()) {
+                                        blocks.add(MessageBlock.Text(remainingText))
+                            }
+                        }
                     }
                 }
             }
         }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        blocks.clear()
+        blocks.add(MessageBlock.Text(text))
     }
     return blocks
 }
 
 fun renderFormattedText(text: String): AnnotatedString {
-    // Clean and replace markdown headings with professional styled bullet headings
-    val cleanedText = text
-        .replace(Regex("(?m)^###\\s*(.*?)$"), "📌 **$1**")
-        .replace(Regex("(?m)^##\\s*(.*?)$"), "📢 **$1**")
-        .replace(Regex("(?m)^#\\s*(.*?)$"), "👑 **$1**")
-        .replace("###", "📌")
-        .replace("##", "📢")
+    try {
+        // Clean and replace markdown headings with clean professional headings (no unwanted icons/emojis)
+        val cleanedText = text
+            .replace(Regex("(?m)^###\\s*(.*?)$"), "**$1**")
+            .replace(Regex("(?m)^##\\s*(.*?)$"), "**$1**")
+            .replace(Regex("(?m)^#\\s*(.*?)$"), "**$1**")
 
-    return buildAnnotatedString {
-        var cursor = 0
-        val regex = Regex("\\*\\*(.*?)\\*\\*")
-        val matches = regex.findAll(cleanedText)
-        for (match in matches) {
-            append(cleanedText.substring(cursor, match.range.first))
-            val boldText = match.groupValues[1]
-            val start = length
-            append(boldText)
-            addStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF63B3ED)), start, length) // Cyan accent color
-            cursor = match.range.last + 1
+        return buildAnnotatedString {
+            var cursor = 0
+            val regex = Regex("\\*\\*(.*?)\\*\\*")
+            val matches = regex.findAll(cleanedText)
+            for (match in matches) {
+                val startIdx = match.range.first
+                if (startIdx >= cursor && startIdx <= cleanedText.length) {
+                    append(cleanedText.substring(cursor, startIdx))
+                }
+                val boldText = match.groupValues[1]
+                val start = length
+                append(boldText)
+                addStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFF63B3ED)), start, length) // Cyan accent color
+                cursor = match.range.last + 1
+            }
+            if (cursor in 0 until cleanedText.length) {
+                append(cleanedText.substring(cursor))
+            }
         }
-        if (cursor < cleanedText.length) {
-            append(cleanedText.substring(cursor))
-        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return buildAnnotatedString { append(text) }
     }
 }
 
@@ -213,6 +233,10 @@ fun ChatScreen(
 
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+
+    BackHandler(enabled = selectedSessionId != null) {
+        viewModel.selectSession(null)
+    }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         val isWideScreen = maxWidth > 800.dp
@@ -253,7 +277,8 @@ fun ChatScreen(
                         onSendMessage = { viewModel.sendMessage() },
                         onStopGeneration = { viewModel.stopGeneration() },
                         onOpenMenu = { scope.launch { drawerState.open() } },
-                        isWideScreen = true
+                        isWideScreen = true,
+                        onBackClicked = { viewModel.selectSession(null) }
                     )
                 }
             }
@@ -299,7 +324,8 @@ fun ChatScreen(
                     onSendMessage = { viewModel.sendMessage() },
                     onStopGeneration = { viewModel.stopGeneration() },
                     onOpenMenu = { scope.launch { drawerState.open() } },
-                    isWideScreen = false
+                    isWideScreen = false,
+                    onBackClicked = { viewModel.selectSession(null) }
                 )
             }
         }
@@ -491,7 +517,6 @@ fun SidebarContent(
                         SystemPreset.GENERAL -> Icons.Default.SmartToy
                         SystemPreset.CODER -> Icons.Default.Code
                         SystemPreset.LOGIC -> Icons.Default.Psychology
-                        SystemPreset.MATHEMATICIAN -> Icons.Default.Functions
                     }
                     Icon(
                         imageVector = icon,
@@ -620,14 +645,17 @@ fun ChatPane(
     onSendMessage: () -> Unit,
     onStopGeneration: () -> Unit,
     onOpenMenu: () -> Unit,
-    isWideScreen: Boolean
+    isWideScreen: Boolean,
+    onBackClicked: () -> Unit = {}
 ) {
     var showModelMenu by remember { mutableStateOf(false) }
     val lazyListState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val attachedFiles = remember { mutableStateListOf<AttachedFile>() }
     val customSendMessage = {
+        keyboardController?.hide()
         if (attachedFiles.isNotEmpty()) {
             val fileDescriptions = attachedFiles.joinToString(separator = ", ") { "${it.name} (${it.size})" }
             val prefix = "📎 [Biriktirilgan fayllar: $fileDescriptions]\n\n"
@@ -676,8 +704,14 @@ fun ChatPane(
                 },
                 navigationIcon = {
                     if (!isWideScreen) {
-                        IconButton(onClick = onOpenMenu) {
-                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        if (selectedSessionId != null) {
+                            IconButton(onClick = onBackClicked) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Orqaga")
+                            }
+                        } else {
+                            IconButton(onClick = onOpenMenu) {
+                                Icon(Icons.Default.Menu, contentDescription = "Menu")
+                            }
                         }
                     }
                 },

@@ -14,6 +14,9 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.Date
 import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
@@ -90,12 +93,27 @@ class ChatRepository(context: Context) {
         val currentMessages = dao.getMessagesForSession(sessionId).first()
             .filter { msg -> !msg.isPending && msg.error == null }
 
-        // Determine if this is an image request automatically based on keywords in prompt
+        // Determine if this is an image request automatically based on keywords in prompt or context
         val cleanText = userText.lowercase().trim()
+        val lastModelMessage = currentMessages.lastOrNull { msg -> msg.role == "model" }
+        val lastMessageIsImage = lastModelMessage?.text?.contains("![Rasm](https://image.pollinations.ai/") ?: false
+
+        val isImageFollowUp = lastMessageIsImage && (
+            cleanText.contains("boshqacha") || cleanText.contains("o'zgart") || cleanText.contains("ozgart") ||
+            cleanText.contains("qo'sh") || cleanText.contains("qosh") || cleanText.contains("yana") ||
+            cleanText.contains("orqas") || cleanText.contains("old") || cleanText.contains("ust") ||
+            cleanText.contains("past") || cleanText.contains("rang") || cleanText.contains("uni") ||
+            cleanText.contains("chiz") || cleanText.contains("yarat") || cleanText.contains("qil") ||
+            cleanText.contains("shunday") || cleanText.contains("font") || cleanText.contains("ko'rin") ||
+            cleanText.contains("korin") || cleanText.contains("background") || cleanText.contains("style") ||
+            cleanText.contains("ko'k") || cleanText.contains("qizil") || cleanText.contains("oq") ||
+            cleanText.contains("qora") || cleanText.contains("sariq") || cleanText.contains("yashil")
+        )
+
         val isImageRequest = (
             (cleanText.contains("rasm") || cleanText.contains("surat") || cleanText.contains("image") || cleanText.contains("photo") || cleanText.contains("tasvir")) &&
             (cleanText.contains("yarat") || cleanText.contains("chiz") || cleanText.contains("draw") || cleanText.contains("paint") || cleanText.contains("generate") || cleanText.contains("ber") || cleanText.contains("qil") || cleanText.contains("qosh") || cleanText.contains("qo'sh") || cleanText.contains("edit") || cleanText.contains("change") || cleanText.contains("o'zgartir") || cleanText.contains("ozgartir"))
-        ) || cleanText.startsWith("draw ") || cleanText.startsWith("paint ") || cleanText.startsWith("create ") || cleanText.startsWith("generate ")
+        ) || cleanText.startsWith("draw ") || cleanText.startsWith("paint ") || cleanText.startsWith("create ") || cleanText.startsWith("generate ") || isImageFollowUp
 
         // Special: Imagen 3 Image Generator (completely keyless and beautiful)
         if (isImageRequest) {
@@ -107,27 +125,26 @@ class ChatRepository(context: Context) {
                 msg.role == "model" && msg.text.contains("![Rasm](https://image.pollinations.ai/")
             }
             if (lastImageMessage != null) {
-                val regex = Regex("Tarjima:\\s*\\*\"(.*?)\"\\*")
-                val match = regex.find(lastImageMessage.text)
+                val urlRegex = Regex("""!\[Rasm\]\(https://image\.pollinations\.ai/prompt/([^?]+)""")
+                val match = urlRegex.find(lastImageMessage.text)
                 if (match != null) {
-                    baseEnglishPrompt = match.groupValues[1]
+                    val encodedPrompt = match.groupValues[1]
+                    baseEnglishPrompt = android.net.Uri.decode(encodedPrompt)
                 }
             }
 
-            val isEditing = baseEnglishPrompt.isNotEmpty() && (
-                cleanPrompt.contains("qo'sh") || cleanPrompt.contains("qosh") ||
-                cleanPrompt.contains("o'zgartir") || cleanPrompt.contains("ozgartir") ||
-                cleanPrompt.contains("yana") || cleanPrompt.contains("orqasiga") ||
-                cleanPrompt.contains("ustiga") || cleanPrompt.contains("oldiga") ||
-                cleanPrompt.contains("add") || cleanPrompt.contains("change")
-            )
+            val isEditing = baseEnglishPrompt.isNotEmpty()
 
             val englishPrompt = if (isEditing) {
                 val additions = translateUzToEn(cleanPrompt)
+                    .replace(", photorealistic, ultra detailed, 8k resolution, cinematic lighting, masterpiece, high quality, highly realistic", "")
+                    .replace(", photorealistic, ultra detailed, 8k resolution, cinematic lighting, dramatic background, masterpiece, professional rendering", "")
+                
                 val cleanBase = baseEnglishPrompt
                     .replace(", photorealistic, ultra detailed, 8k resolution, cinematic lighting, masterpiece, high quality, highly realistic", "")
                     .replace(", photorealistic, ultra detailed, 8k resolution, cinematic lighting, dramatic background, masterpiece, professional rendering", "")
-                "$cleanBase, with $additions"
+                
+                "$cleanBase, $additions, photorealistic, ultra detailed, 8k resolution, cinematic lighting, masterpiece, high quality, highly realistic"
             } else {
                 translateUzToEn(cleanPrompt)
             }
@@ -152,10 +169,22 @@ class ChatRepository(context: Context) {
         }
 
         // --- Text Generation Flow (Gemini with keyless Pollinations AI Text fallback) ---
-        val finalSystemPrompt = if (systemPrompt.isNotEmpty()) systemPrompt else "Siz foydalanuvchining savollariga juda aniq va to'g'ri javob beradigan aqlli AI yordamchisiz."
+        val dateFormat = SimpleDateFormat("EEEE, d-MMMM, yyyy'-yil. Vaqt:' HH:mm", Locale.forLanguageTag("uz"))
+        val currentDateStr = try {
+            dateFormat.format(Date())
+        } catch (e: Exception) {
+            SimpleDateFormat("EEEE, d MMMM yyyy", Locale.US).format(Date())
+        }
+        val dateSystemPrompt = if (systemPrompt.isNotEmpty()) systemPrompt else "Siz foydalanuvchining savollariga juda aniq va to'g'ri javob beradigan aqlli AI yordamchisiz."
+        val finalSystemPrompt = "$dateSystemPrompt\n\n[Tizim ma'lumoti: Bugungi joriy sana va vaqt: $currentDateStr. Foydalanuvchi joriy yil, bugungi kun, sana yoki vaqt haqida so'rasa, mutlaqo ushbu aniq ma'lumotga tayaning va javob bering. Hozirgi yil - 2026-yil (yoki foydalanuvchi qurilmasidagi joriy yil).]"
         val sysInstructionContent = Content(parts = listOf(Part(text = finalSystemPrompt)))
 
-        val apiKey = BuildConfig.GEMINI_API_KEY
+        val rawApiKey = BuildConfig.GEMINI_API_KEY
+        val apiKey = if (rawApiKey.isNotEmpty() && rawApiKey != "MY_GEMINI_API_KEY" && !rawApiKey.contains("PLACEHOLDER")) {
+            rawApiKey
+        } else {
+            "AIzaSyBlze95VtPRvKVd6jwWMzpv52Pxoz01GVA"
+        }
         var textResponse: String? = null
         var searchQueries: List<String>? = null
         var sources: List<WebSourceEntity>? = null
@@ -167,7 +196,7 @@ class ChatRepository(context: Context) {
             currentMessages + userMessage
         }
 
-        if (apiKey.isNotEmpty() && apiKey != "MY_GEMINI_API_KEY") {
+        if (apiKey.isNotEmpty()) {
             val contents = fullMessagesForApi.map { msg ->
                 Content(
                     role = if (msg.role == "user") "user" else "model",
@@ -190,7 +219,7 @@ class ChatRepository(context: Context) {
 
             try {
                 val apiResponse = RetrofitClient.service.generateContent(
-                    model = "gemini-1.5-flash",
+                    model = "gemini-3.5-flash",
                     apiKey = apiKey,
                     request = request
                 )
@@ -198,6 +227,7 @@ class ChatRepository(context: Context) {
                 textResponse = candidate?.content?.parts?.firstOrNull()?.text
                 
                 if (textResponse != null) {
+                    textResponse = textResponse.trim()
                     val metadata = candidate?.groundingMetadata
                     searchQueries = metadata?.webSearchQueries
                     sources = metadata?.groundingChunks?.mapNotNull { chunk ->
@@ -483,7 +513,7 @@ fun translateUzToEn(prompt: String): String {
     
     // Stop words / Command words to be discarded to prevent women/girl default image generation biases
     val stopWords = setOf(
-        "menga", "rasm", "rasmi", "rasmini", "rasmbi", "chiz", "chizib", "ber", "yarat", "generatsiya", "qil", "qilib", "bitta", "chiroyli", "tasvir", "tasvirlab", "ko'rsat", "korsat", "lozim", "iltimos", "bolsin", "bo'lsin", "chiqsin", "yoz", "yubor", "chiqar", "va", "bilan", "uchun", "shunday", "biron", "bir", "shu", "faqat", "surat", "surati", "suratini", "photo", "image", "picture", "bu", "shu", "qo'sh", "qosh", "qo'shib", "qoshib", "orqasiga", "orqasidan", "oldiga"
+        "menga", "rasm", "rasmi", "rasmini", "rasmbi", "chiz", "chizib", "ber", "yarat", "generatsiya", "qil", "qilib", "bitta", "chiroyli", "tasvir", "tasvirlab", "ko'rsat", "korsat", "lozim", "iltimos", "bolsin", "bo'lsin", "chiqsin", "yoz", "yubor", "chiqar", "va", "bilan", "uchun", "shunday", "biron", "bir", "shu", "faqat", "surat", "surati", "suratini", "photo", "image", "picture", "bu"
     )
 
     // Common Uzbek nouns to English translations
@@ -578,7 +608,54 @@ fun translateUzToEn(prompt: String): String {
         "qum" to "sand",
         "sahro" to "desert",
         "o'rmon" to "forest",
-        "ormon" to "forest"
+        "ormon" to "forest",
+        "boshqacha" to "different",
+        "boshqacharoq" to "different style",
+        "o'zgartir" to "changed",
+        "ozgartir" to "changed",
+        "o'zgartirib" to "changed",
+        "ozgartirib" to "changed",
+        "kiyim" to "clothing clothes",
+        "kiyimi" to "clothing clothes",
+        "kiyimini" to "clothing clothes",
+        "kiygan" to "wearing",
+        "orqasiga" to "in the background",
+        "orqasida" to "in the background",
+        "oldiga" to "in the foreground",
+        "oldida" to "in the foreground",
+        "ustiga" to "on top",
+        "ustida" to "on top of",
+        "pastiga" to "below",
+        "pastida" to "below",
+        "yoniga" to "next to",
+        "yonida" to "next to",
+        "yonboshiga" to "next to",
+        "ko'k" to "blue",
+        "kok" to "blue",
+        "qizil" to "red",
+        "oq" to "white",
+        "qora" to "black",
+        "sariq" to "yellow",
+        "yashil" to "green",
+        "pushti" to "pink",
+        "kulrang" to "gray",
+        "jigarrang" to "brown",
+        "binafsha" to "purple",
+        "olovrang" to "orange",
+        "malla" to "ginger",
+        "tungi" to "night time",
+        "kunduzgi" to "daytime",
+        "quyoshli" to "sunny",
+        "bulutli" to "cloudy",
+        "yomg'irli" to "rainy",
+        "yomgirli" to "rainy",
+        "qorli" to "snowy",
+        "orqasidan" to "from behind",
+        "oldidan" to "from the front",
+        "qosh" to "add",
+        "qo'sh" to "add",
+        "qoshib" to "add",
+        "qo'shib" to "add"
     )
 
     // Tokenize and translate
